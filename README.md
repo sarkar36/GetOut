@@ -45,3 +45,49 @@ GetOut helps kids replace passive screen time with curiosity, outdoor discovery,
 ---
 
 Created for the Hacktoberfest 2026 DEV Open-Source AI Challenge, Week 1: **Touch Grass**.
+
+## Installation and Setup
+
+### Requirements
+- Python 3.10 or later
+- [Ollama](https://ollama.com/)
+- Git (optional)
+
+### Steps to Run Locally
+
+1. Clone or download this repository.
+2. Install the required Python packages:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Install and start Ollama.
+4. Download the required AI model:
+
+   ```bash
+   ollama pull qwen2.5:1.5b
+   ```
+
+5. Run the application:
+
+   ```bash
+   python -m streamlit run app.py
+   ```
+
+6. Open the local URL displayed in your terminal, usually `http://localhost:8501`.
+
+## Technologies Used
+
+- Python
+- Streamlit
+- Ollama
+- Qwen 2.5 (1.5B)
+
+## Project Status
+
+GetOut is an ongoing project focused on making outdoor learning fun, interactive, and accessible for children.
+
+## Author
+
+Created by [sarkar36](https://github.com/sarkar36).
