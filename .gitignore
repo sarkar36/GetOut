@@ -1,8 +1,6 @@
-```gitignore
 progress.json
 progress_backup.json
 __pycache__/
 .venv/
 venv/
 .env
-```
