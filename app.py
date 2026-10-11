@@ -1,3 +1,4 @@
+
 import json
 import re
 import unicodedata
@@ -6,12 +7,12 @@ from pathlib import Path
 
 import ollama
 import streamlit as st
+
 st.set_page_config(
     page_title="GetOut",
     page_icon="🌍",
-    layout="centered"
+    layout="centered",
 )
-
 
 # ==========================================
 # CONFIGURATION
@@ -21,6 +22,7 @@ PROGRESS_FILE = Path("progress.json")
 DEFAULT_GEMS = 10
 MODEL_NAME = "qwen2.5:1.5b"
 DAILY_REWARD = 3
+MAX_HISTORY = 200
 
 CATEGORIES = [
     "🌿 Nature",
@@ -34,24 +36,24 @@ CATEGORY_KEYWORDS = {
     "🌿 Nature": [
         "nature", "leaf", "leaves", "tree", "flower", "plant",
         "bird", "seed", "garden", "grass", "natural", "soil",
-        "petal", "bark", "insect", "outdoor"
+        "petal", "bark", "insect", "outdoor",
     ],
     "🌙 Astronomy": [
         "moon", "star", "planet", "sky", "sunset", "sunrise",
-        "constellation", "astronomy", "cloud", "night sky"
+        "constellation", "astronomy", "cloud", "night sky",
     ],
     "🔬 Science": [
         "science", "shadow", "light", "sound", "motion", "water",
         "rolling", "balance", "wind", "drying", "brightness",
-        "sunny", "shaded", "temperature", "reflection"
+        "sunny", "shaded", "temperature", "reflection",
     ],
     "🗺️ Exploration": [
         "explore", "map", "landmark", "direction", "route",
-        "surroundings", "nearby", "location", "pattern", "surface"
+        "surroundings", "nearby", "location", "pattern", "surface",
     ],
     "🎨 Creativity": [
         "draw", "drawing", "sketch", "create", "creative",
-        "art", "story", "poem", "color", "colour", "design"
+        "art", "story", "poem", "color", "colour", "design",
     ],
 }
 
@@ -60,8 +62,8 @@ CATEGORY_KEYWORDS = {
 # PROGRESS STORAGE
 # ==========================================
 
-def load_progress():
-    defaults = {
+def get_default_progress():
+    return {
         "gems": DEFAULT_GEMS,
         "streak": 0,
         "badges": [],
@@ -75,6 +77,10 @@ def load_progress():
         "current_quest_completed": False,
         "current_quest_rewarded": False,
     }
+
+
+def load_progress():
+    defaults = get_default_progress()
 
     if not PROGRESS_FILE.exists():
         return defaults
@@ -95,6 +101,27 @@ def load_progress():
 
         if not isinstance(saved["badges"], list):
             saved["badges"] = []
+
+        # Remove only empty or unusable history entries.
+        clean_history = []
+
+        for item in saved["quest_history"]:
+            if isinstance(item, str):
+                if item.strip() and get_quest_title(item) != "Untitled Quest":
+                    clean_history.append(item)
+
+            elif isinstance(item, dict):
+                quest_text = str(item.get("quest", "")).strip()
+                title = str(item.get("title", "")).strip()
+
+                if not title and quest_text:
+                    title = get_quest_title(quest_text)
+
+                if title and title != "Untitled Quest":
+                    item["title"] = title
+                    clean_history.append(item)
+
+        saved["quest_history"] = clean_history[:MAX_HISTORY]
 
         return saved
 
@@ -119,21 +146,18 @@ def save_progress():
         "badges": st.session_state.badges,
         "last_completed_date": (
             st.session_state.last_completed_date.isoformat()
-            if st.session_state.last_completed_date
-            else None
+            if st.session_state.last_completed_date else None
         ),
-        "quest_history": st.session_state.quest_history,
+        "quest_history": st.session_state.quest_history[:MAX_HISTORY],
         "daily_quest": st.session_state.ai_quest,
         "quest_date": (
             st.session_state.quest_date.isoformat()
-            if st.session_state.quest_date
-            else None
+            if st.session_state.quest_date else None
         ),
         "quest_category": st.session_state.quest_category,
         "completed_quest_date": (
             st.session_state.completed_quest_date.isoformat()
-            if st.session_state.completed_quest_date
-            else None
+            if st.session_state.completed_quest_date else None
         ),
         "daily_feedback": st.session_state.daily_feedback,
         "current_quest_completed": (
@@ -151,16 +175,15 @@ def save_progress():
 
 
 # ==========================================
-# TEXT VALIDATION
+# TEXT HELPERS AND VALIDATION
 # ==========================================
 
 def is_english_script(text):
-    """Reject non-Latin writing systems while allowing punctuation and emoji."""
     for character in text:
         if unicodedata.category(character).startswith("L"):
-            character_name = unicodedata.name(character, "")
+            name = unicodedata.name(character, "")
 
-            if "LATIN" not in character_name:
+            if "LATIN" not in name:
                 return False
 
     return True
@@ -169,7 +192,7 @@ def is_english_script(text):
 def get_quest_title(quest):
     match = re.search(
         r"Quest Title:\s*(.+)",
-        quest,
+        quest or "",
         flags=re.IGNORECASE,
     )
 
@@ -177,6 +200,33 @@ def get_quest_title(quest):
         return match.group(1).strip().strip("*# ")
 
     return "Untitled Quest"
+
+
+def normalize_title(title):
+    title = unicodedata.normalize("NFKC", title).lower()
+    return re.sub(r"[^a-z0-9]+", " ", title).strip()
+
+
+def titles_are_similar(first, second):
+    a = normalize_title(first)
+    b = normalize_title(second)
+
+    if not a or not b:
+        return False
+
+    if a == b:
+        return True
+
+    words_a = set(a.split())
+    words_b = set(b.split())
+
+    if not words_a or not words_b:
+        return False
+
+    overlap = len(words_a & words_b) / len(words_a | words_b)
+
+    # Catch titles that differ only by a small wording change.
+    return overlap >= 0.75
 
 
 def validate_quest(quest, category):
@@ -192,6 +242,7 @@ def validate_quest(quest, category):
         "Question 1:",
         "Question 2:",
         "Question 3:",
+        "Safety Reminders:",
     ]
 
     lowered = quest.lower()
@@ -201,10 +252,9 @@ def validate_quest(quest, category):
 
     title = get_quest_title(quest)
 
-    if len(title) < 5 or len(title) > 100:
+    if title == "Untitled Quest" or not 5 <= len(title) <= 100:
         return False
 
-    # Reject astronomy activities in unrelated categories.
     if category != "🌙 Astronomy":
         astronomy_phrases = [
             "observe the moon",
@@ -217,7 +267,6 @@ def validate_quest(quest, category):
         if any(phrase in lowered for phrase in astronomy_phrases):
             return False
 
-    # Comparing natural sunlight with a flashlight is misleading.
     if (
         "shaded area" in lowered
         and "sunny area" in lowered
@@ -234,6 +283,8 @@ def validate_quest(quest, category):
         "eat unknown plants",
         "touch unknown insects",
         "go near traffic",
+        "enter an abandoned building",
+        "enter a restricted area",
     ]
 
     if any(phrase in lowered for phrase in unsafe_phrases):
@@ -244,7 +295,6 @@ def validate_quest(quest, category):
     if not any(term in lowered for term in category_terms):
         return False
 
-    # Require three distinct question lines.
     questions = []
 
     for number in (1, 2, 3):
@@ -271,12 +321,13 @@ def validate_quest(quest, category):
 
 
 # ==========================================
-# SAFE QUEST FALLBACKS
+# FALLBACK QUESTS
 # ==========================================
 
 def make_fallback_quest(category):
     fallbacks = {
-        "🌿 Nature": """
+        "🌿 Nature": [
+            """
 Quest Title: Compare Two Fallen Leaves
 
 What to Do:
@@ -286,54 +337,116 @@ What to Do:
 4. Leave living plants undamaged.
 
 Question 1: What differences can you observe between the two leaves?
-
 Question 2: Which feature is easiest to compare, and why?
-
 Question 3: What else would you like to discover about fallen leaves?
 
 Safety Reminders:
-Stay in a safe area and ask an adult for help when needed.
-Do not taste plants or touch unknown insects.
+- Stay in a safe, familiar area.
+- Do not taste plants or touch unknown insects.
 """,
-        "🌙 Astronomy": """
+            """
+Quest Title: Observe a Plant from a Safe Distance
+
+What to Do:
+1. Choose a plant you can observe without damaging it.
+2. Notice its visible leaves, stem, and overall shape.
+3. Draw the plant or write down three visible details.
+
+Question 1: What visible parts can you identify?
+Question 2: How do the leaves differ in size or shape?
+Question 3: What would you like to learn about this plant?
+
+Safety Reminders:
+- Do not pick or taste unknown plants.
+- Avoid touching unknown insects.
+""",
+            """
+Quest Title: Find Natural Patterns Nearby
+
+What to Do:
+1. Look for natural patterns in fallen leaves or tree bark.
+2. Observe repeated lines, shapes, or colors without damaging plants.
+3. Draw one pattern you find.
+
+Question 1: What pattern did you notice?
+Question 2: Which lines or shapes repeat?
+Question 3: Where else might you find a similar natural pattern?
+
+Safety Reminders:
+- Stay in a safe, familiar place.
+- Leave living plants undamaged.
+""",
+        ],
+        "🌙 Astronomy": [
+            """
 Quest Title: Record the Evening Sky
 
 What to Do:
-1. With a trusted adult, observe the sky from a safe place.
+1. Observe the sky from a safe, familiar place.
 2. Notice its colors and whether clouds are visible.
 3. Draw what you see or write three details.
-4. Never look directly at the Sun.
 
 Question 1: What colors can you observe in the sky?
-
-Question 2: Which parts of the sky look different from each other?
-
+Question 2: Which parts of the sky look different?
 Question 3: What would you like to observe about the sky tomorrow?
 
 Safety Reminders:
-Stay in a familiar place with an adult when needed.
-Never look directly at the Sun.
+- Stay in a safe place with an adult when needed.
+- Never look directly at the Sun.
 """,
-        "🔬 Science": """
+            """
+Quest Title: Watch Clouds from a Safe Place
+
+What to Do:
+1. Find a comfortable place where you can see the sky.
+2. Observe the visible clouds without staring at the Sun.
+3. Draw one cloud or describe its outline.
+
+Question 1: What shapes do you notice in the clouds?
+Question 2: How do two visible clouds differ?
+Question 3: What would you like to observe about clouds next?
+
+Safety Reminders:
+- Never look directly at the Sun.
+- Stay in a safe, familiar place.
+""",
+        ],
+        "🔬 Science": [
+            """
 Quest Title: Compare Two Shadows
 
 What to Do:
-1. With an adult, choose two safe objects that cast shadows.
-2. Observe their shadows on the ground in the same natural light.
+1. Choose two safe objects that cast shadows.
+2. Observe their shadows in the same natural light.
 3. Compare the shadows' lengths and shapes.
-4. Do not look directly at the Sun.
 
 Question 1: What differences do you notice between the shadows?
-
 Question 2: Which shadow looks longer or shorter?
-
-Question 3: What could you observe later to see whether the shadows change?
+Question 3: What could you observe later to see whether shadows change?
 
 Safety Reminders:
-Stay in a safe, familiar area.
-Never look directly at the Sun.
+- Stay in a safe, familiar area.
+- Never look directly at the Sun.
 """,
-        "🗺️ Exploration": """
+            """
+Quest Title: Test Which Objects Roll
+
+What to Do:
+1. Choose two safe, round objects and a flat surface.
+2. Gently roll each object across the same short distance.
+3. Observe whether their movement looks different.
+
+Question 1: What happened when you rolled each object?
+Question 2: Which object moved differently?
+Question 3: What other safe object could you compare next?
+
+Safety Reminders:
+- Use small, harmless objects.
+- Keep the test away from stairs and roads.
+""",
+        ],
+        "🗺️ Exploration": [
+            """
 Quest Title: Find Three Shapes Nearby
 
 What to Do:
@@ -342,125 +455,179 @@ What to Do:
 3. Draw the shapes or describe where you found them.
 
 Question 1: Which three shapes did you notice?
-
 Question 2: Where did you find each shape?
-
-Question 3: What other shapes might be hiding in your surroundings?
+Question 3: What other shapes might be in your surroundings?
 
 Safety Reminders:
-Stay away from roads and unfamiliar places.
-Ask a trusted adult for help when needed.
+- Stay away from roads and unfamiliar places.
+- Ask a trusted adult for help when needed.
 """,
-        "🎨 Creativity": """
+            """
+Quest Title: Map a Familiar Small Area
+
+What to Do:
+1. Choose a familiar room, yard, or safe outdoor area.
+2. Sketch three recognizable objects or landmarks.
+3. Show their approximate positions on your simple map.
+
+Question 1: Which landmarks did you include?
+Question 2: Where is one landmark in relation to another?
+Question 3: What detail would improve your map?
+
+Safety Reminders:
+- Do not enter unfamiliar places.
+- Do not share your home address publicly.
+""",
+        ],
+        "🎨 Creativity": [
+            """
 Quest Title: Create a Picture from Five Shapes
 
 What to Do:
 1. Find a safe place to sit outdoors or near a window.
 2. Draw five simple shapes on paper.
-3. Combine them into a picture of something imaginary or familiar.
-4. Give your picture a title.
+3. Combine them into a picture and give it a title.
 
 Question 1: Which five shapes did you use?
-
-Question 2: How did you combine them to make your picture?
-
+Question 2: How did you combine them into a picture?
 Question 3: What could you change to create a different picture?
 
 Safety Reminders:
-Use safe drawing materials.
-Stay in a safe place and ask an adult for help when needed.
+- Use safe drawing materials.
+- Stay in a safe place.
 """,
+            """
+Quest Title: Draw a Pattern from Nature
+
+What to Do:
+1. Observe a natural pattern from a safe distance.
+2. Draw a repeating pattern inspired by what you noticed.
+3. Add your own colors or shapes to the design.
+
+Question 1: What inspired your pattern?
+Question 2: Which shapes or lines repeat?
+Question 3: How could you change the design to make another pattern?
+
+Safety Reminders:
+- Do not damage plants to collect materials.
+- Stay in a safe, familiar place.
+""",
+        ],
     }
 
-    return fallbacks.get(category, fallbacks["🔬 Science"]).strip()
+    options = fallbacks.get(category, fallbacks["🔬 Science"])
+    used_titles = {
+        normalize_title(history_title(item))
+        for item in st.session_state.get("quest_history", [])
+    }
+
+    for quest in options:
+        if normalize_title(get_quest_title(quest)) not in used_titles:
+            return quest.strip()
+
+    # If all fallback titles were used, choose a valid fallback anyway.
+    # This guarantees the app can still provide a quest offline.
+    return options[0].strip()
 
 
 # ==========================================
 # QUEST GENERATION
 # ==========================================
 
+def get_previous_titles():
+    titles = []
+
+    for item in st.session_state.quest_history:
+        title = history_title(item)
+
+        if title and title != "Untitled Quest":
+            titles.append(title)
+
+    return titles
+
+
 def generate_quest(category):
-    previous_quests = st.session_state.quest_history[-15:]
-    previous_titles = []
+    previous_titles = get_previous_titles()
+    previous_titles_text = "\n".join(
+        f"- {title}" for title in previous_titles[-40:]
+    ) or "- None"
 
-    for item in previous_quests:
-        if isinstance(item, dict):
-            title = item.get("title", "")
-        else:
-            title = get_quest_title(str(item))
-
-        if title:
-            previous_titles.append(f"- {title}")
-
-    history_text = "\n".join(previous_titles) or "- None"
-
-    prompt = f"""
+    # Try a few times to avoid a repeated title.
+    for attempt in range(3):
+        prompt = f"""
 You are GetOut, a careful quest designer for children.
 
-Create ONE safe, practical, scientifically sensible real-world quest.
+Create ONE new, safe, practical outdoor-learning quest.
 
 SELECTED CATEGORY: {category}
 
 Category guidelines:
-- Nature: fallen leaves, trees, flowers, birds, or natural patterns.
-- Astronomy: sky, Moon, or stars observed safely.
-- Science: shadows, sound, motion, light, water, or balance.
-- Exploration: familiar surroundings, landmarks, shapes, or directions.
-- Creativity: drawing, sketching, patterns, or storytelling.
+- Nature: fallen leaves, trees, flowers, birds, natural patterns.
+- Astronomy: sky, Moon, stars, and clouds observed safely.
+- Science: shadows, sound, motion, light, water, balance.
+- Exploration: familiar surroundings, maps, shapes, directions.
+- Creativity: drawing, sketching, patterns, storytelling.
 
-Strict requirements:
-- Write the entire response in English using Latin letters.
-- The activity must be possible in a safe, familiar place.
-- Do not invent scientific facts or misleading instructions.
-- Do not ask a child to use a flashlight to compare sunny and shaded areas.
-  Compare those areas directly using natural daylight.
-- Never ask a child to look directly at the Sun.
-- Never suggest touching unknown plants or insects, tasting outdoor objects,
-  climbing, approaching strangers, entering isolated places, or going near traffic.
+Requirements:
+- Write in English using Latin letters.
+- Use a safe, familiar place and free, ordinary materials.
+- Never ask children to look directly at the Sun.
+- Never suggest climbing, approaching strangers, entering isolated
+  places, going near traffic, tasting plants, or touching unknown insects.
 - Do not damage living plants.
-- Do not require special equipment or spending money.
-- Avoid repeating previous quest titles or making slightly renamed copies.
-- Make each question different:
-  Question 1 asks about a direct observation.
-  Question 2 asks for a comparison or another detail.
-  Question 3 asks what the child is curious about next.
-- Do not repeat the same question in different words.
+- Make the quest meaningfully different from previous activities.
+- Do not simply rename a previous quest.
+- Questions must ask about observation, comparison, and further curiosity.
+- Attempt number: {attempt + 1}
+- Avoid the previous titles and activities.
 
 Previous quest titles:
-{history_text}
+{previous_titles_text}
 
 Use exactly this format:
 
-Quest Title:
-What to Do:
-1.
-2.
-3.
+Quest Title: [new title]
 
-Question 1:
-Question 2:
-Question 3:
+What to Do:
+1. [step]
+2. [step]
+3. [step]
+
+Question 1: [observation question]
+Question 2: [comparison question]
+Question 3: [further curiosity question]
 
 Safety Reminders:
-- Add two or three relevant safety reminders.
+- [safety reminder]
+- [safety reminder]
 
 Do not include an introduction or extra sections.
 """
 
-    try:
-        response = ollama.chat(
-            model=MODEL_NAME,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.4},
-        )
+        try:
+            response = ollama.chat(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": prompt}],
+                options={"temperature": 0.7 + attempt * 0.1},
+            )
 
-        quest = response["message"]["content"].strip()
+            quest = response["message"]["content"].strip()
 
-        if validate_quest(quest, category):
-            return quest
+            if not validate_quest(quest, category):
+                continue
 
-    except Exception:
-        pass
+            title = get_quest_title(quest)
+
+            repeated = any(
+                titles_are_similar(title, previous)
+                for previous in previous_titles
+            )
+
+            if not repeated:
+                return quest
+
+        except Exception:
+            break
 
     return make_fallback_quest(category)
 
@@ -475,17 +642,12 @@ def make_fallback_feedback(quest, observation):
 
     if "shadow" in lowered:
         follow_up = (
-            "Next time, compare the two shadows' lengths and shapes "
-            "from the same place. What difference can you actually see?"
+            "Next time, compare the two shadows' lengths and shapes. "
+            "What difference can you actually see?"
         )
-    elif "sunny area" in lowered or "shaded area" in lowered:
+    elif "leaf" in lowered or "plant" in lowered:
         follow_up = (
-            "Next time, compare both areas directly in natural daylight. "
-            "Which area looks brighter to you?"
-        )
-    elif "leaf" in lowered:
-        follow_up = (
-            "Next time, compare the leaves' edges, shapes, or sizes. "
+            "Next time, compare visible shapes, edges, or sizes. "
             "Which difference is easiest to notice?"
         )
     elif "sky" in lowered or "moon" in lowered or "star" in lowered:
@@ -493,10 +655,13 @@ def make_fallback_feedback(quest, observation):
             "What is one more detail you could observe about the sky "
             "without looking directly at the Sun?"
         )
+    elif "draw" in lowered or "pattern" in lowered:
+        follow_up = (
+            "What is one part of your drawing or pattern you could change?"
+        )
     else:
         follow_up = (
-            "What is one more detail you could observe, compare, or record "
-            "the next time you try this activity?"
+            "What is one more detail you could observe, compare, or record?"
         )
 
     safe_observation = observation.strip().replace('"', "'")[:500]
@@ -506,21 +671,21 @@ def make_fallback_feedback(quest, observation):
 
 You wrote: "{safe_observation}"
 
-I can use the details you shared, but I cannot independently verify what happened.
-For "{title}", try to record exactly what you saw or did.
+I cannot independently verify what happened. For "{title}", record what
+you actually saw or tried.
 
 ### 2. Think about it
 
 Your notes are a starting point. Add one specific detail, such as a visible
-difference, a shape, a direction, or a comparison that matches the activity.
-Avoid guessing at a cause before collecting more observations.
+difference, a shape, a direction, or a comparison. Avoid guessing at a cause
+before collecting more observations.
 
 ### 3. Explore further
 
 {follow_up}
 
-**Curiosity score: 5/10.** You shared an observation. Adding one or two
-specific details would make it easier to investigate.
+**Curiosity score: 5/10.** You shared an observation. Adding specific details
+would make it easier to investigate.
 """.strip()
 
 
@@ -533,19 +698,19 @@ def validate_feedback(feedback):
 
     lowered = feedback.lower()
 
-    required_sections = [
+    required = [
         "what you reported",
         "think about it",
         "explore further",
         "curiosity score",
     ]
 
-    return all(section in lowered for section in required_sections)
+    return all(section in lowered for section in required)
 
 
 def generate_mentor_feedback(quest, observation):
     prompt = f"""
-You are a careful, supportive learning mentor for a child.
+You are a supportive learning mentor for a child.
 
 QUEST:
 {quest}
@@ -553,31 +718,26 @@ QUEST:
 CHILD'S EXACT OBSERVATION:
 {observation}
 
-Your job is to help the child think, not invent what happened.
-
 Rules:
 - Write only in English using Latin letters.
-- Refer only to details explicitly present in the child's observation.
-- Do not claim the child saw, measured, touched, or tested something
-  unless the child explicitly said so.
-- Do not invent object properties, measurements, events, or causes.
-- Do not assume why something happened.
-- If the observation is vague, identify one specific missing detail.
-- Make feedback relevant to the actual quest.
-- Ask one simple, useful follow-up question.
-- Do not give a made-up scientific explanation.
-- Keep the response short, kind, and child-friendly.
+- Refer only to details in the child's observation.
+- Never claim the child measured, saw, touched, or tested something
+  unless they explicitly said so.
+- Do not invent measurements, events, properties, or causes.
+- If the observation is vague, identify one missing detail.
+- Ask one simple follow-up question.
+- Be kind and concise.
 
 Use exactly these headings:
 
 ### 1. What you reported
-Briefly reflect what the child actually wrote.
+Reflect what the child actually wrote.
 
 ### 2. Think about it
-Identify one relevant detail that is missing or one comparison the child could make.
+Identify one missing detail or useful comparison.
 
 ### 3. Explore further
-Ask one clear question that can be answered by further observation.
+Ask one clear question for further observation.
 
 Finish with:
 **Curiosity score: X/10.** Give a brief reason based only on the observation.
@@ -647,35 +807,45 @@ def count_categories(history):
 
 
 def add_quest_to_history(quest, category):
-    # Keep the current quest in history without deleting old records.
+    title = get_quest_title(quest)
+
     st.session_state.quest_history.insert(
         0,
         {
-            "title": get_quest_title(quest),
+            "title": title,
             "quest": quest,
             "category": category,
             "date": date.today().isoformat(),
             "gems_earned": 0,
+            "completed": False,
+            "feedback": "",
         },
     )
 
+    st.session_state.quest_history = (
+        st.session_state.quest_history[:MAX_HISTORY]
+    )
 
-def update_current_history_reward(gems_earned):
-    current_title = get_quest_title(st.session_state.ai_quest)
+
+def update_current_history(gems_earned, completed, feedback):
     today_string = date.today().isoformat()
+    current_title = get_quest_title(st.session_state.ai_quest)
 
     for item in st.session_state.quest_history:
         if (
             isinstance(item, dict)
             and item.get("title") == current_title
             and item.get("date") == today_string
+            and item.get("category") == st.session_state.quest_category
         ):
             item["gems_earned"] = gems_earned
+            item["completed"] = completed
+            item["feedback"] = feedback
             return
 
 
 # ==========================================
-# INITIALIZE SESSION STATE
+# SESSION INITIALIZATION
 # ==========================================
 
 if "progress_loaded" not in st.session_state:
@@ -719,7 +889,7 @@ for key, value in session_defaults.items():
 
 today = date.today()
 
-# Expire the previous day's quest without resetting long-term progress.
+# Expire yesterday's displayed quest but preserve long-term progress.
 if st.session_state.quest_date != today:
     st.session_state.ai_quest = ""
     st.session_state.quest_date = None
@@ -761,15 +931,26 @@ st.divider()
 
 category = st.selectbox("Choose your adventure", CATEGORIES)
 
-if st.button("Get Today's Quest", type="primary"):
-    same_category_quest_exists = (
-        st.session_state.quest_date == today
-        and bool(st.session_state.ai_quest)
-        and st.session_state.quest_category == category
+completed_today = st.session_state.completed_quest_date == today
+
+if completed_today:
+    st.info(
+        "You have completed today's quest. "
+        "Your next quest and reward will be available tomorrow."
     )
 
-    if not same_category_quest_exists:
-        with st.spinner("Preparing a safe, real-world adventure..."):
+if st.button(
+    "Get Today's Quest",
+    type="primary",
+    disabled=completed_today,
+):
+    if (
+        st.session_state.quest_date == today
+        and st.session_state.ai_quest
+    ):
+        st.info("Today's quest is already ready. Try it before generating another.")
+    else:
+        with st.spinner("Preparing a safe, new adventure..."):
             quest = generate_quest(category)
 
         st.session_state.ai_quest = quest
@@ -803,17 +984,13 @@ if quest_is_for_today:
     )
 
     if st.session_state.completed_quest_date == today:
-        st.success("🎉 You've completed a quest today!")
+        st.success("🎉 You've completed today's quest!")
 
         if st.session_state.daily_feedback:
             st.subheader("🧠 AI Mentor Feedback")
             st.markdown(st.session_state.daily_feedback)
 
-        st.info(
-            "Today's reward was already claimed. "
-            "This quest earned no extra Gems."
-        )
-
+        st.success(f"You earned {DAILY_REWARD} Gems for today's completion.")
     else:
         st.subheader("📝 Your Observation")
 
@@ -829,10 +1006,6 @@ if quest_is_for_today:
         if submitted:
             if not observation.strip():
                 st.warning("Please write what you discovered first.")
-
-            elif st.session_state.completed_quest_date == today:
-                st.warning("Today's reward has already been claimed.")
-
             else:
                 with st.spinner("Your AI mentor is reviewing your observation..."):
                     feedback = generate_mentor_feedback(
@@ -842,26 +1015,19 @@ if quest_is_for_today:
 
                 last_completed = st.session_state.last_completed_date
 
-                # Update the daily streak.
                 if last_completed is None:
                     st.session_state.streak = 1
-
                 else:
                     days_passed = (today - last_completed).days
 
                     if days_passed == 1:
                         st.session_state.streak += 1
-
                     elif days_passed > 1:
                         st.session_state.streak = 1
-
                         if st.session_state.gems > 0:
                             st.session_state.gems -= 1
 
-                # Only the first completed quest of the day earns Gems.
-                gems_earned = DAILY_REWARD
-                st.session_state.gems += gems_earned
-
+                st.session_state.gems += DAILY_REWARD
                 st.session_state.last_completed_date = today
                 st.session_state.completed_quest_date = today
                 st.session_state.daily_feedback = feedback
@@ -875,7 +1041,11 @@ if quest_is_for_today:
                 ):
                     st.session_state.badges.append("🔎 Curious Explorer")
 
-                update_current_history_reward(gems_earned)
+                update_current_history(
+                    DAILY_REWARD,
+                    True,
+                    feedback,
+                )
 
                 save_progress()
                 st.rerun()
@@ -914,7 +1084,6 @@ st.subheader("🗂️ Past adventures")
 
 if not history:
     st.write("No quests recorded yet.")
-
 else:
     for index, item in enumerate(history[:50], start=1):
         title = history_title(item)
@@ -927,8 +1096,16 @@ else:
             st.write(f"**Date:** {saved_date}")
             st.write(f"**Gems earned:** +{gems_earned}")
 
-            if isinstance(item, dict) and item.get("quest"):
-                st.markdown(item["quest"])
+            if isinstance(item, dict):
+                if item.get("completed"):
+                    st.write("**Status:** Completed")
+
+                if item.get("feedback"):
+                    st.markdown("**Mentor feedback**")
+                    st.markdown(item["feedback"])
+
+                if item.get("quest"):
+                    st.markdown(item["quest"])
             elif isinstance(item, str):
                 st.markdown(item)
 
